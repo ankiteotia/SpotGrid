@@ -172,11 +172,6 @@ struct ScanFlowView: View {
             PlacementARViewContainer(coordinator: coordinator)
                 .ignoresSafeArea()
 
-            // Non-LiDAR crosshair — dead center, colored by reticle state.
-            if coordinator.phase == .tagging, coordinator.reticle != .inactive {
-                reticleCrosshair
-            }
-
             VStack {
                 if coordinator.phase == .relocalizingExisting {
                     appendRelocalizeCard
@@ -198,12 +193,6 @@ struct ScanFlowView: View {
                 Spacer()
 
                 if coordinator.phase != .relocalizingExisting {
-                    if coordinator.reticle != .inactive {
-                        reticlePlaceControls
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 10)
-                    }
-
                     bottomBar
                         .padding(.horizontal, 20)
                         .padding(.bottom, 36)
@@ -249,11 +238,11 @@ struct ScanFlowView: View {
             Group {
                 switch coordinator.reticle {
                 case .searching:
-                    Text("Point the crosshair at a surface and hold steady")
+                    Text("Slowly pan the camera — the white ring will appear on a surface")
                 case .tooFar(let distance):
-                    Text(String(format: "Too far (%.1f m) — move closer for an accurate tag", distance))
+                    Text(String(format: "Too far (%.1f m) — move closer for an accurate placement", distance))
                 case .ready(let distance):
-                    Text(String(format: "Locked · %.1f m — let the ring settle, then place", distance))
+                    Text(String(format: "Ring ready · %.1f m — move it ON to the object, then place", distance))
                 case .inactive:
                     EmptyView()
                 }

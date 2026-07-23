@@ -135,9 +135,12 @@ final class ARPersistenceManager {
                 config.sceneReconstruction = .mesh
             }
         case .locate:
-            config.planeDetection = [.horizontal, .vertical]
-            // No sceneReconstruction here: dropping the mesh is the single
-            // biggest thermal/battery win in Locate mode on Pro devices.
+            config.planeDetection = []
+            // No plane detection or sceneReconstruction in locate mode: both
+            // are pure battery/CPU cost (no raycasts happen here), and plane
+            // detection can snap restored anchors to detected planes, causing
+            // position drift from the originally saved location.
+
         }
 
         config.initialWorldMap = initialWorldMap

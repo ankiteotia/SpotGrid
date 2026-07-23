@@ -223,10 +223,13 @@ struct LocateView: View {
                 Button {
                     let seconds = max(1, Int(coordinator.guidingDuration))
                     let unit = seconds == 1 ? "second" : "seconds"
+                    // Freeze coordinate updates immediately so phone movement
+                    // during the dismissal animation doesn't shift the display.
+                    coordinator.freeze()
+                    coordinator.triggerConfetti()
                     withAnimation(.spring) {
                         foundSummary = "Found in \(seconds) \(unit)!"
                     }
-                    coordinator.triggerConfetti()
                     Task {
                         try? await Task.sleep(for: .seconds(3.5))
                         coordinator.stop()

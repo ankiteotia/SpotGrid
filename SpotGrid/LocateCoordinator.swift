@@ -58,6 +58,13 @@ final class LocateCoordinator: NSObject, ObservableObject {
     private var fallbackScheduled = false
     private var guidingStartTime: Date?
 
+    // Smoothed anchor position used for all HUD calculations. Each frame the
+    // smoothed value moves 8% toward the raw anchor position — small jitter
+    // and micro-drift from phone movement are averaged out while intentional
+    // movement (user walking toward the item) updates naturally in ~0.2 s.
+    private var smoothedTargetPosition: SIMD3<Float>?
+    private let targetSmoothing: Float = 0.08
+
     private let arrowHoverHeight: Float = 0.28
 
     private let haptics = GuidanceHaptics()
@@ -93,9 +100,17 @@ final class LocateCoordinator: NSObject, ObservableObject {
         Task { await loadAndRun(mapData: mapData) }
     }
 
-    func stop() {
+    /// Freezes all per-frame coordinate updates (distance, haptics, screen
+    /// guidance) without pausing the AR session. Call this when the user
+    /// confirms they found the item so phone movement during the dismissal
+    /// animation doesn't cause coordinates to keep changing on screen.
+    func freeze() {
         updateSubscription?.cancel()
         updateSubscription = nil
+    }
+
+    func stop() {
+        freeze()
         arSession.pause()
     }
 
@@ -146,6 +161,7 @@ final class LocateCoordinator: NSObject, ObservableObject {
         arView.scene.addAnchor(anchor)
         guidanceAnchor = anchor
         arrowEntity = arrow
+        smoothedTargetPosition = nil
         state = .guiding
         guidingStartTime = Date()
     }
@@ -174,7 +190,13 @@ final class LocateCoordinator: NSObject, ObservableObject {
             arrowEntity.orientation = simd_quatf(angle: Float(elapsed * 1.6), axis: [0, 1, 0])
         }
 
-        let target = guidanceAnchor.position(relativeTo: nil)
+        let rawTarget = guidanceAnchor.position(relativeTo: nil)
+        if smoothedTargetPosition == nil {
+            smoothedTargetPosition = rawTarget
+        } else {
+            smoothedTargetPosition = smoothedTargetPosition! + (rawTarget - smoothedTargetPosition!) * targetSmoothing
+        }
+        let target = smoothedTargetPosition!
         let cameraTransform = arView.cameraTransform
 
         // Distance readout.

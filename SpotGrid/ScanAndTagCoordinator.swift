@@ -168,7 +168,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
     func startTaggingAfterMapping() {
         guard phase == .mapping, mappingStatus.isSufficientForSaving else { return }
         phase = .tagging
-        transientHint = "Tap a drawer, shelf, or spot to tag an item"
+        transientHint = "Tap directly on the object you want to tag"
     }
 
     // MARK: - Phase 1 → 2: finish scanning (LiDAR path)
@@ -235,43 +235,44 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Tap → raycast → pending placement (LiDAR path)
+    // MARK: - Tap → raycast → pending placement
 
     func handleTap(at point: CGPoint) {
         guard phase == .tagging, let arView else { return }
-
-        // Non-LiDAR: taps commit against an unrefined depth estimate and land
-        // centimeters-to-decimeters off — the crosshair flow replaces them.
-        if usesReticlePlacement {
-            transientHint = "Use the crosshair — line it up with the exact spot, then tap Place Item"
-            return
-        }
 
         guard mappingStatus.isSufficientForSaving else {
             transientHint = "Keep scanning the area before placing the item"
             return
         }
 
-        // LiDAR: .estimatedPlane raycasts against the scene-reconstruction
-        // mesh, landing precisely on drawer fronts and shelf edges.
-        guard let result = arView
+        // Raycast from exact tap point on both LiDAR and non-LiDAR.
+        // LiDAR:     hits scene-reconstruction mesh precisely.
+        // Non-LiDAR: hits estimated plane near the tapped spot; lateral position
+        //            is correct, depth may be off a few cm — still far better than
+        //            a fixed screen-center raycast the user can't aim directly.
+        if let result = arView
             .raycast(from: point, allowing: .estimatedPlane, alignment: .any)
-            .first
-        else {
-            transientHint = "No surface there — aim at a drawer, shelf, or wall"
+            .first {
+            pendingPlacement = PendingPlacement(transform: result.worldTransform)
             return
         }
 
-        pendingPlacement = PendingPlacement(transform: result.worldTransform)
+        // No plane detected at tap point (non-LiDAR limitation). Fall back to
+        // the background tracked raycast which has been refining depth for
+        // several frames from screen center — better than nothing.
+        if let fallback = lastReticleTransform {
+            pendingPlacement = PendingPlacement(transform: fallback)
+            return
+        }
+
+        transientHint = "No surface detected — tap directly on or just beside the object"
     }
 
     // MARK: - Reticle placement (non-LiDAR path)
 
-    /// Lazily started from `session(_:didUpdate:)` once the tagging ARView has
-    /// real bounds. A tracked raycast is the accuracy upgrade here: unlike a
-    /// one-shot raycast, ARKit keeps refining its result every frame as
-    /// parallax improves its depth estimate — the user literally watches the
-    /// preview ring settle onto the surface before committing.
+    /// Runs a silent background tracked raycast from screen center on non-LiDAR
+    /// devices. No visual preview is shown — the result feeds `lastReticleTransform`
+    /// which `handleTap` uses as a fallback when the tap-point raycast finds nothing.
     private func startReticleIfNeeded() {
         guard usesReticlePlacement,
               phase == .tagging,
@@ -287,15 +288,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
             alignment: .any
         ) else { return }
 
-        let preview = AnchorEntity(world: SIMD3<Float>.zero)
-        preview.addChild(EntityFactory.reticlePreview())
-        preview.isEnabled = false
-        arView.scene.addAnchor(preview)
-        reticlePreviewAnchor = preview
-        reticle = .searching
-
         trackedRaycast = arSession.trackedRaycast(query) { [weak self] results in
-            // Delivered on the session delegate queue — main by default.
             MainActor.assumeIsolated {
                 self?.reticleDidUpdate(results)
             }
@@ -304,25 +297,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
 
     private func reticleDidUpdate(_ results: [ARRaycastResult]) {
         guard phase == .tagging else { return }
-
-        guard let result = results.first, let arView else {
-            lastReticleTransform = nil
-            reticlePreviewAnchor?.isEnabled = false
-            reticle = .searching
-            return
-        }
-
-        lastReticleTransform = result.worldTransform
-        reticlePreviewAnchor?.isEnabled = true
-        reticlePreviewAnchor?.transform = Transform(matrix: result.worldTransform)
-
-        let position = SIMD3<Float>(
-            result.worldTransform.columns.3.x,
-            result.worldTransform.columns.3.y,
-            result.worldTransform.columns.3.z
-        )
-        let distance = simd_distance(arView.cameraTransform.translation, position)
-        reticle = distance > maxReticlePlacementDistance ? .tooFar(distance) : .ready(distance)
+        lastReticleTransform = results.first?.worldTransform
     }
 
     /// The non-LiDAR "Place Item" action: commit the latest refined transform.
