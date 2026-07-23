@@ -20,6 +20,7 @@ struct LocateView: View {
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var coordinator = LocateCoordinator()
+    @State private var foundSummary: String? = nil
 
     var body: some View {
         ZStack {
@@ -84,30 +85,54 @@ struct LocateView: View {
     private var guidingHUD: some View {
         VStack {
             Spacer()
-            VStack(spacing: 6) {
-                Text(asset.name)
-                    .font(.headline)
-                if !asset.notes.isEmpty {
-                    Text(asset.notes)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+            
+            if let summary = foundSummary {
+                VStack(spacing: 8) {
+                    Text("🎉 Found It! 🎉")
+                        .font(.largeTitle.bold())
+                    Text(summary)
+                        .font(.title3.weight(.medium))
                 }
-                if coordinator.isArrived {
-                    Label("You're here — check this exact spot", systemImage: "checkmark.seal.fill")
+                .padding(.horizontal, 32)
+                .padding(.vertical, 24)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                .transition(.scale.combined(with: .opacity))
+                .padding(.bottom, 80)
+            } else {
+                VStack(spacing: 6) {
+                    if let data = asset.photoData, let uiImage = UIImage(data: data) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 120, height: 120)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .padding(.bottom, 6)
+                    }
+                    
+                    Text(asset.name)
                         .font(.headline)
-                        .foregroundStyle(.green)
-                } else if let distance = coordinator.distanceText {
-                    Label(distance, systemImage: "location.north.line.fill")
-                        .font(.title3.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.yellow)
+                    if !asset.notes.isEmpty {
+                        Text(asset.notes)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    if coordinator.isArrived {
+                        Label("You're here — check this exact spot", systemImage: "checkmark.seal.fill")
+                            .font(.headline)
+                            .foregroundStyle(.green)
+                    } else if let distance = coordinator.distanceText {
+                        Label(distance, systemImage: "location.north.line.fill")
+                            .font(.title3.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.yellow)
+                    }
                 }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .padding(.bottom, 44)
+                .animation(.easeInOut(duration: 0.2), value: coordinator.isArrived)
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-            .padding(.bottom, 44)
-            .animation(.easeInOut(duration: 0.2), value: coordinator.isArrived)
         }
     }
 
@@ -194,10 +219,19 @@ struct LocateView: View {
             }
             Spacer()
 
-            if coordinator.state == .guiding {
+            if coordinator.state == .guiding && foundSummary == nil {
                 Button {
-                    coordinator.stop()
-                    dismiss()
+                    let seconds = max(1, Int(coordinator.guidingDuration))
+                    let unit = seconds == 1 ? "second" : "seconds"
+                    withAnimation(.spring) {
+                        foundSummary = "Found in \(seconds) \(unit)!"
+                    }
+                    coordinator.triggerConfetti()
+                    Task {
+                        try? await Task.sleep(for: .seconds(3.5))
+                        coordinator.stop()
+                        dismiss()
+                    }
                 } label: {
                     Label("Found It", systemImage: "checkmark")
                         .font(.subheadline.weight(.semibold))

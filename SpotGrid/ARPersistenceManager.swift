@@ -135,7 +135,7 @@ final class ARPersistenceManager {
                 config.sceneReconstruction = .mesh
             }
         case .locate:
-            config.planeDetection = []
+            config.planeDetection = [.horizontal, .vertical]
             // No sceneReconstruction here: dropping the mesh is the single
             // biggest thermal/battery win in Locate mode on Pro devices.
         }

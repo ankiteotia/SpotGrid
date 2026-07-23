@@ -56,6 +56,7 @@ final class LocateCoordinator: NSObject, ObservableObject {
     private var updateSubscription: (any Cancellable)?
     private var elapsed: TimeInterval = 0
     private var fallbackScheduled = false
+    private var guidingStartTime: Date?
 
     private let arrowHoverHeight: Float = 0.28
 
@@ -126,7 +127,7 @@ final class LocateCoordinator: NSObject, ObservableObject {
         fallbackScheduled = true
 
         Task {
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: .seconds(10))
             guard state == .searchingAnchor, guidanceAnchor == nil else { return }
             mountGuidance(on: AnchorEntity(world: storedFallbackPosition))
         }
@@ -146,6 +147,19 @@ final class LocateCoordinator: NSObject, ObservableObject {
         guidanceAnchor = anchor
         arrowEntity = arrow
         state = .guiding
+        guidingStartTime = Date()
+    }
+
+    var guidingDuration: TimeInterval {
+        guard let start = guidingStartTime else { return 0 }
+        return Date().timeIntervalSince(start)
+    }
+
+    func triggerConfetti() {
+        guard let anchor = guidanceAnchor else { return }
+        let burst = EntityFactory.confetti()
+        burst.position = [0, 0.2, 0]
+        anchor.addChild(burst)
     }
 
     // MARK: - Per-frame guidance

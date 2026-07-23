@@ -65,6 +65,8 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
         let id: UUID
         var name: String
         var notes: String
+        var iconName: String
+        var photoData: Data?
         let transform: simd_float4x4
 
         var position: SIMD3<Float> {
@@ -245,6 +247,11 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
             return
         }
 
+        guard mappingStatus.isSufficientForSaving else {
+            transientHint = "Keep scanning the area before placing the item"
+            return
+        }
+
         // LiDAR: .estimatedPlane raycasts against the scene-reconstruction
         // mesh, landing precisely on drawer fronts and shelf edges.
         guard let result = arView
@@ -320,6 +327,10 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
 
     /// The non-LiDAR "Place Item" action: commit the latest refined transform.
     func placeAtReticle() {
+        guard mappingStatus.isSufficientForSaving else {
+            transientHint = "Keep scanning the area before placing the item"
+            return
+        }
         guard case .ready = reticle, let transform = lastReticleTransform else { return }
         pendingPlacement = PendingPlacement(transform: transform)
     }
@@ -336,13 +347,13 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
     /// User confirmed the tag sheet: mint the named anchor. The name embeds the
     /// asset UUID, so the anchor inside the world map and the SwiftData row are
     /// permanently linked — and renaming the item later never touches it.
-    func confirmPendingAsset(name: String, notes: String) {
+    func confirmPendingAsset(name: String, notes: String, iconName: String, photoData: Data?) {
         guard let pending = pendingPlacement else { return }
         pendingPlacement = nil
 
         let assetID = UUID()
         draftAssets.append(
-            DraftAsset(id: assetID, name: name, notes: notes, transform: pending.transform)
+            DraftAsset(id: assetID, name: name, notes: notes, iconName: iconName, photoData: photoData, transform: pending.transform)
         )
 
         let anchor = ARAnchor(name: AnchorNaming.name(for: assetID), transform: pending.transform)
@@ -381,6 +392,8 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
                     id: draft.id,               // same UUID the anchor name embeds
                     name: draft.name,
                     notes: draft.notes,
+                    iconName: draft.iconName,
+                    photoData: draft.photoData,
                     position: draft.position
                 )
                 asset.room = room
@@ -420,6 +433,8 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
                     id: draft.id,
                     name: draft.name,
                     notes: draft.notes,
+                    iconName: draft.iconName,
+                    photoData: draft.photoData,
                     position: draft.position
                 )
                 asset.room = room
@@ -524,10 +539,19 @@ extension ScanAndTagCoordinator: ARSessionDelegate {
             // Covers BOTH freshly tapped anchors and — in append mode — the
             // room's original anchors restored during relocalization, which is
             // how existing items show up as markers for free.
-            for anchor in anchors where AnchorNaming.assetID(from: anchor.name) != nil {
-                let anchorEntity = AnchorEntity(anchor: anchor)
-                anchorEntity.addChild(EntityFactory.itemMarker())
-                arView.scene.addAnchor(anchorEntity)
+            for anchor in anchors {
+                if let assetID = AnchorNaming.assetID(from: anchor.name) {
+                    var iconName = "mappin.and.ellipse"
+                    if let draft = draftAssets.first(where: { $0.id == assetID }) {
+                        iconName = draft.iconName
+                    } else if case .append(let room) = mode, let saved = room.assets.first(where: { $0.id == assetID }) {
+                        iconName = saved.iconName
+                    }
+                    
+                    let anchorEntity = AnchorEntity(anchor: anchor)
+                    anchorEntity.addChild(EntityFactory.itemMarker(iconName: iconName))
+                    arView.scene.addAnchor(anchorEntity)
+                }
             }
         }
     }

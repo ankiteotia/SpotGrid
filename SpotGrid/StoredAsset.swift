@@ -26,6 +26,9 @@ final class StoredAsset {
     var notes: String
     var dateAdded: Date
 
+    @Attribute(.externalStorage) var photoData: Data?
+    var iconName: String = "mappin.and.ellipse"
+
     // SwiftData can't persist SIMD types directly — store scalar columns.
     var xCoordinate: Float
     var yCoordinate: Float
@@ -37,12 +40,16 @@ final class StoredAsset {
         id: UUID = UUID(),
         name: String,
         notes: String = "",
+        iconName: String = "mappin.and.ellipse",
+        photoData: Data? = nil,
         dateAdded: Date = .now,
         position: SIMD3<Float>
     ) {
         self.id = id
         self.name = name
         self.notes = notes
+        self.iconName = iconName
+        self.photoData = photoData
         self.dateAdded = dateAdded
         self.xCoordinate = position.x
         self.yCoordinate = position.y

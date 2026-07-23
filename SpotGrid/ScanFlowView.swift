@@ -17,6 +17,7 @@ import ARKit
 import SwiftData
 import SwiftUI
 import UIKit
+import PhotosUI
 
 struct ScanFlowView: View {
 
@@ -52,12 +53,12 @@ struct ScanFlowView: View {
         .interactiveDismissDisabled()
         .sheet(item: $coordinator.pendingPlacement) { placement in
             TagItemSheet(
-                onConfirm: { name, notes in
-                    coordinator.confirmPendingAsset(name: name, notes: notes)
+                onConfirm: { name, notes, iconName, photoData in
+                    coordinator.confirmPendingAsset(name: name, notes: notes, iconName: iconName, photoData: photoData)
                 },
                 onCancel: { coordinator.pendingPlacement = nil }
             )
-            .presentationDetents([.height(300)])
+            .presentationDetents([.large])
         }
         .sheet(isPresented: $isPresentingSaveSheet) {
             SaveRoomSheet { roomName in
@@ -397,20 +398,76 @@ struct ScanFlowView: View {
 // MARK: - Tag item sheet
 
 struct TagItemSheet: View {
-    let onConfirm: (_ name: String, _ notes: String) -> Void
+    let onConfirm: (_ name: String, _ notes: String, _ iconName: String, _ photoData: Data?) -> Void
     let onCancel: () -> Void
 
     @State private var name = ""
     @State private var notes = ""
+    @State private var iconName = "mappin.and.ellipse"
+    @State private var photoItem: PhotosPickerItem?
+    @State private var photoData: Data?
+    
     @FocusState private var nameFocused: Bool
+
+    let iconChoices = ["mappin.and.ellipse", "key.fill", "doc.text.fill", "lanyardcard.fill", "laptopcomputer", "tshirt.fill", "glasses", "pills.fill", "bag.fill", "creditcard.fill"]
 
     var body: some View {
         NavigationStack {
             Form {
-                TextField("Item name (e.g. Passport)", text: $name)
-                    .focused($nameFocused)
-                TextField("Notes (e.g. in Drawer 3, under the files)", text: $notes, axis: .vertical)
-                    .lineLimit(2...4)
+                Section {
+                    TextField("Item name (e.g. Passport)", text: $name)
+                        .focused($nameFocused)
+                    TextField("Notes (e.g. in Drawer 3, under the files)", text: $notes, axis: .vertical)
+                        .lineLimit(2...4)
+                }
+                
+                Section("Icon") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 16) {
+                            ForEach(iconChoices, id: \.self) { icon in
+                                Image(systemName: icon)
+                                    .font(.title2)
+                                    .foregroundStyle(iconName == icon ? .white : .primary)
+                                    .frame(width: 44, height: 44)
+                                    .background(iconName == icon ? Color.accentColor : Color(uiColor: .systemFill))
+                                    .clipShape(Circle())
+                                    .onTapGesture {
+                                        iconName = icon
+                                    }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 4)
+                    }
+                }
+                
+                Section("Photo (Optional)") {
+                    PhotosPicker(selection: $photoItem, matching: .images, photoLibrary: .shared()) {
+                        if let photoData, let uiImage = UIImage(data: photoData) {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(height: 120)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        } else {
+                            Label("Add a Photo", systemImage: "camera.viewfinder")
+                        }
+                    }
+                    .onChange(of: photoItem) { _, newItem in
+                        Task {
+                            guard let data = try? await newItem?.loadTransferable(type: Data.self),
+                                  let uiImage = UIImage(data: data) else { return }
+                            let thumbnail = uiImage.preparingThumbnail(of: CGSize(width: 800, height: 800))
+                            photoData = (thumbnail ?? uiImage).jpegData(compressionQuality: 0.7)
+                        }
+                    }
+                    if photoData != nil {
+                        Button("Remove Photo", role: .destructive) {
+                            photoItem = nil
+                            photoData = nil
+                        }
+                    }
+                }
             }
             .navigationTitle("Tag This Spot")
             .navigationBarTitleDisplayMode(.inline)
@@ -420,7 +477,7 @@ struct TagItemSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Place Tag") {
-                        onConfirm(name.trimmingCharacters(in: .whitespaces), notes)
+                        onConfirm(name.trimmingCharacters(in: .whitespaces), notes, iconName, photoData)
                     }
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }

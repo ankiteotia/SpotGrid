@@ -71,32 +71,58 @@ struct RoomListView: View {
         } else {
             List {
                 ForEach(rooms) { room in
-                    NavigationLink {
-                        RoomDetailView(room: room) { asset in
-                            assetToLocate = asset
-                        }
-                    } label: {
+                    ZStack {
                         roomRow(room)
+                        NavigationLink {
+                            RoomDetailView(room: room) { asset in
+                                assetToLocate = asset
+                            }
+                        } label: {
+                            EmptyView()
+                        }
+                        .opacity(0)
                     }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }
                 .onDelete(perform: deleteRooms)
             }
+            .listStyle(.plain)
         }
     }
 
     private func roomRow(_ room: RoomModel) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(room.name)
-                .font(.headline)
-            HStack(spacing: 12) {
-                Label("\(room.assets.count) items", systemImage: "mappin.and.ellipse")
-                Label(room.scannedDate.formatted(date: .abbreviated, time: .omitted),
-                      systemImage: "calendar")
+        HStack {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(room.name)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.white)
+                
+                HStack(spacing: 16) {
+                    Label("\(room.assets.count) items", systemImage: "mappin.and.ellipse")
+                    Label(room.scannedDate.formatted(date: .abbreviated, time: .omitted),
+                          systemImage: "calendar")
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.white.opacity(0.8))
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.headline)
+                .foregroundStyle(.white.opacity(0.5))
         }
-        .padding(.vertical, 4)
+        .padding(24)
+        .background(
+            LinearGradient(
+                colors: [Color.blue.opacity(0.7), Color.purple.opacity(0.7)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 5)
     }
 
     private func deleteRooms(at offsets: IndexSet) {
@@ -135,6 +161,17 @@ struct RoomDetailView: View {
 
     var body: some View {
         List {
+            if let capturedRoomData = room.capturedRoomData {
+                Section {
+                    RoomPlanView(capturedRoomData: capturedRoomData)
+                        .frame(height: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            }
+            
             Section {
                 ForEach(sortedAssets) { asset in
                     Button {

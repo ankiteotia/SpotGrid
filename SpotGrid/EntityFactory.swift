@@ -16,18 +16,53 @@ import UIKit
 
 enum EntityFactory {
 
-    // MARK: - Tagging marker
+    private static var materialCache: [String: Material] = [:]
 
-    /// Small persistent dot shown where an item was tagged during the capture
-    /// flow — instant confirmation that the anchor landed where the user tapped.
-    static func itemMarker(color: UIColor = .systemTeal) -> Entity {
-        let sphere = ModelEntity(
-            mesh: .generateSphere(radius: 0.018),
-            materials: [UnlitMaterial(color: color)]
+    private static func iconMaterial(name: String, color: UIColor) -> Material {
+        if let cached = materialCache[name] { return cached }
+
+        let size = CGSize(width: 256, height: 256)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { ctx in
+            color.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+
+            if let symbol = UIImage(systemName: name)?
+                .withTintColor(.white, renderingMode: .alwaysOriginal) {
+                let symbolSize = symbol.size
+                let scale = min(size.width / symbolSize.width, size.height / symbolSize.height) * 0.6
+                let scaledSize = CGSize(width: symbolSize.width * scale, height: symbolSize.height * scale)
+                let rect = CGRect(
+                    x: (size.width - scaledSize.width) / 2,
+                    y: (size.height - scaledSize.height) / 2,
+                    width: scaledSize.width,
+                    height: scaledSize.height
+                )
+                symbol.draw(in: rect)
+            }
+        }
+
+        guard let cgImage = image.cgImage,
+              let texture = try? TextureResource.generate(from: cgImage, options: .init(semantic: .color)) else {
+            return UnlitMaterial(color: color)
+        }
+
+        var mat = UnlitMaterial()
+        mat.color = .init(tint: .white, texture: .init(texture))
+        materialCache[name] = mat
+        return mat
+    }
+
+    /// Small persistent marker shown where an item was tagged, now with an icon.
+    static func itemMarker(iconName: String = "mappin.and.ellipse", color: UIColor = .systemTeal) -> Entity {
+        let material = iconMaterial(name: iconName, color: color)
+        
+        let plane = ModelEntity(
+            mesh: .generatePlane(width: 0.05, depth: 0.05, cornerRadius: 0.01),
+            materials: [material]
         )
-        // Lift the dot a touch off the surface so it never z-fights the mesh.
-        sphere.position = [0, 0.018, 0]
-
+        plane.position = [0, 0.025, 0]
+        
         let halo = ModelEntity(
             mesh: .generatePlane(width: 0.09, depth: 0.09, cornerRadius: 0.045),
             materials: [UnlitMaterial(color: color.withAlphaComponent(0.30))]
@@ -35,7 +70,7 @@ enum EntityFactory {
         halo.position = [0, 0.002, 0]
 
         let container = Entity()
-        container.addChild(sphere)
+        container.addChild(plane)
         container.addChild(halo)
         return container
     }
@@ -141,5 +176,16 @@ enum EntityFactory {
         // generate(from:) only throws on malformed descriptors; this one is
         // statically well-formed, so a failure here is a programmer error.
         return try! MeshResource.generate(from: [descriptor])
+    }
+
+    // MARK: - Confetti
+    
+    static func confetti() -> Entity {
+        let halo = ModelEntity(
+            mesh: .generatePlane(width: 0.3, depth: 0.3, cornerRadius: 0.15),
+            materials: [UnlitMaterial(color: UIColor.systemGreen.withAlphaComponent(0.6))]
+        )
+        halo.position = [0, 0.05, 0]
+        return halo
     }
 }
