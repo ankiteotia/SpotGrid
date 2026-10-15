@@ -480,6 +480,9 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
     }
 
     /// The spot's "before" photo: the current camera frame at placement time.
+    /// Runs on the main actor (~30–50 ms, once per placement) right as the tag
+    /// sheet slides over the camera, so the hitch is masked. Move it off-main
+    /// if profiling on non-Pro devices shows otherwise.
     private func captureSpotPhoto() -> PhotoPair? {
         guard let pixelBuffer = arSession.currentFrame?.capturedImage,
               let image = ImageSupport.uprightImage(

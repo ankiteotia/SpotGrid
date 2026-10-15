@@ -23,6 +23,16 @@ struct ItemDetailView: View {
     @State private var guideTarget: SpotModel?
 
     var body: some View {
+        // Deleting the item's spot from a deeper screen cascades to this
+        // item while this screen is still in the stack. Never read it then.
+        if item.isDeleted || item.modelContext == nil {
+            ContentUnavailableView("Item Deleted", systemImage: "trash")
+        } else {
+            details
+        }
+    }
+
+    private var details: some View {
         List {
             if item.photoData != nil {
                 Section {
@@ -110,7 +120,7 @@ struct ItemDetailView: View {
                 } label: {
                     Label("Guide Me in AR", systemImage: "location.viewfinder")
                 }
-                .disabled(spot.room?.worldMapData == nil)
+                .disabled(spot.room == nil)
             } else {
                 Text("This item isn't in a spot yet.")
                     .foregroundStyle(.secondary)
@@ -146,6 +156,7 @@ struct ItemDetailView: View {
     @ViewBuilder
     private var historySection: some View {
         let events = item.sortedHistory
+        let spotsByID = resolvedSpots(for: events)
         if !events.isEmpty {
             Section {
                 // Newest first; the last row is the original location.
@@ -154,7 +165,8 @@ struct ItemDetailView: View {
                         event: event,
                         isOriginal: index == 0 && events.count > 1,
                         isCurrent: index == events.count - 1,
-                        resolvedSpot: Inventory.spot(withID: event.spotID, in: modelContext),
+                        resolvedSpot: event.spotID.flatMap { spotsByID[$0] },
+                        currentSpotID: item.spot?.id,
                         onGuide: { guideTarget = $0 }
                     )
                 }
@@ -167,6 +179,16 @@ struct ItemDetailView: View {
             }
         }
     }
+
+    /// History stores spot ids, not relationships (so it survives deletion).
+    /// Resolve each distinct id once per render instead of once per row.
+    private func resolvedSpots(for events: [LocationEvent]) -> [UUID: SpotModel] {
+        var spots: [UUID: SpotModel] = [:]
+        for id in Set(events.compactMap(\.spotID)) {
+            spots[id] = Inventory.spot(withID: id, in: modelContext)
+        }
+        return spots
+    }
 }
 
 // MARK: - History row
@@ -177,6 +199,9 @@ private struct HistoryRow: View {
     let isCurrent: Bool
     /// The spot this entry points to, if it still exists.
     let resolvedSpot: SpotModel?
+    /// Guide is offered for any spot the item isn't in now — compared by spot,
+    /// not by row, so A → B → A doesn't offer guidance to where it already is.
+    let currentSpotID: UUID?
     let onGuide: (SpotModel) -> Void
 
     var body: some View {
@@ -203,7 +228,7 @@ private struct HistoryRow: View {
             Spacer(minLength: 8)
 
             // A bordered button keeps the tap target to the button itself.
-            if !isCurrent, let spot = resolvedSpot, spot.room?.worldMapData != nil {
+            if let spot = resolvedSpot, spot.id != currentSpotID, spot.room != nil {
                 Button("Guide") { onGuide(spot) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)

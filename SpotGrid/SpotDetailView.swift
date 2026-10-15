@@ -22,9 +22,22 @@ struct SpotDetailView: View {
     @State private var isConfirmingDelete = false
     @State private var isGuiding = false
 
-    private var canGuide: Bool { spot.room?.worldMapData != nil }
+    // Not `worldMapData != nil`: reading that external-storage attribute
+    // loads the whole map (tens of MB). Every saved room has one, and Locate
+    // reports a missing map itself.
+    private var canGuide: Bool { spot.room != nil }
 
     var body: some View {
+        // The spot can be deleted while this screen is still in the stack
+        // (e.g. deleted from a deeper screen). Never read a deleted model.
+        if spot.isDeleted || spot.modelContext == nil {
+            ContentUnavailableView("Spot Deleted", systemImage: "trash")
+        } else {
+            details
+        }
+    }
+
+    private var details: some View {
         List {
             Section {
                 if spot.photoData != nil {

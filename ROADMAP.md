@@ -56,7 +56,7 @@ chargers, spare keys, medicines, warranty cards. Lists in Notes go stale, and me
 | Phase | Theme | Outcome | Status |
 |---|---|---|---|
 | 0 | Base app (V1.1) | Scan, tag, save, AR locate | ✅ Done |
-| 1 | **Foundation** | Spots, photos, move + history, daily-use basics | 🚧 In progress (`phase-1-foundation`) |
+| 1 | **Foundation** | Spots, photos, move + history, daily-use basics | 🧪 Code done, device testing (`phase-1-foundation`) |
 | 2 | Trust & safety | Change detection, re-anchor on new phone, backup, Face ID lock | ⏳ |
 | 3 | Speed & reach | Siri, Spotlight, iPad split view, QR labels, widgets | ⏳ |
 | 4 | On-device AI capture | Auto-naming, document OCR, natural-language search | ⏳ |
@@ -75,8 +75,12 @@ chargers, spare keys, medicines, warranty cards. Lists in Notes go stale, and me
 - [x] Locate mode: relocalization, arrow, distance, off-screen chevron, haptics, arrival
 - [x] Append items to an existing room, rename room, edit item name/notes
 
-### Phase 1 — Foundation 🚧
+### Phase 1 — Foundation 🧪
 **Goal:** make SpotGrid useful every day without opening AR.
+
+> **Status:** code complete on branch `phase-1-foundation` — not yet built in Xcode or
+> tested on a device. Remaining before merge: build, run unit tests, and walk the
+> device checklist below.
 
 **New data model:** `Room → Spot → Items`, plus per-item location history.
 - A **Spot** is a physical place tagged once in AR (e.g. "Almirah drawer 2"). It owns the
@@ -85,24 +89,34 @@ chargers, spare keys, medicines, warranty cards. Lists in Notes go stale, and me
 - A **LocationEvent** records every time an item is placed or moved.
 
 Checklist:
-- [ ] `SpotModel` + `LocationEvent` SwiftData models; items belong to spots
-- [ ] Automatic upgrade of old data (each old item becomes its own spot; old `asset:` AR
+- [x] `SpotModel` + `LocationEvent` SwiftData models; items belong to spots
+- [x] Automatic upgrade of old data (each old item becomes its own spot; old `asset:` AR
       anchors keep working)
-- [ ] AR tagging creates **spots** (spot name + optional list of items in it)
-- [ ] Automatic spot photo captured at the moment of tagging (correct orientation on
+- [x] AR tagging creates **spots** (spot name + optional list of items in it)
+- [x] Automatic spot photo captured at the moment of tagging (correct orientation on
       iPad landscape too)
-- [ ] Item photos from camera or photo library (camera only outside AR, so the AR
+- [x] Item photos from camera or photo library (camera only outside AR, so the AR
       session is never interrupted)
-- [ ] Room screen shows spots with photos and item counts
-- [ ] Spot screen: photo, items, add item without AR, rename, delete, "Guide me"
-- [ ] Item screen: photo, name, notes, location breadcrumb, move to another spot,
+- [x] Room screen shows spots with photos and item counts
+- [x] Spot screen: photo, items, add item without AR, rename, delete, "Guide me"
+- [x] Item screen: photo, name, notes, location breadcrumb, move to another spot,
       history, "originally at…" with "Guide me to old spot", delete
-- [ ] "Still here ✓" confirmation and "last confirmed" date (also set by *Found It*)
-- [ ] Search matches item name, notes, spot name and room name; results show photo +
+- [x] "Still here ✓" confirmation and "last confirmed" date (also set by *Found It*)
+- [x] Search matches item name, notes, spot name and room name; results show photo +
       "Room › Spot" instantly; AR is one tap away instead of automatic
-- [ ] Locate mode targets a spot; on arrival shows the "before" photo of the spot so
+- [x] Locate mode targets a spot; on arrival shows the "before" photo of the spot so
       the user can compare by eye
-- [ ] Unit tests for pure logic (anchor naming, image orientation, distance formatting)
+- [x] Unit tests for pure logic (anchor naming, image orientation, distance formatting)
+
+**Device checklist (before merging):**
+- [ ] Old data upgrade: install the previous build, save a room with items, upgrade,
+      then locate an old item
+- [ ] Tag spots on LiDAR (tap) and non-LiDAR (crosshair) devices; spot photos upright in
+      iPhone portrait and iPad landscape
+- [ ] Add, move, delete items with camera and library photos; history shows original spot
+- [ ] Guide to an old spot from history; *Found It* there moves the item back
+- [ ] Delete a spot from inside an item → spot screen; no crash
+- [ ] Add Spots to an existing room after deleting a spot; deleted spot's marker is gone
 
 **Done when:** you can tag a drawer once, then add/move/remove items in it for weeks
 without opening AR, and search answers "where is X" with a photo in one tap.
@@ -204,3 +218,5 @@ Everything AR must be checked on real hardware (the simulator has no camera/ARKi
 | 2026-10-15 | Keep `asset:<uuid>` anchors readable forever | Old saved rooms must keep working after upgrade |
 | 2026-10-15 | Camera for item photos only outside AR | Opening the camera interrupts the shared `ARSession` |
 | 2026-10-15 | Automatic change detection moved to Phase 2 | Vision similarity thresholds need real-device calibration |
+| 2026-10-15 | *Found It* at an earlier spot moves the item there | Finding it there is proof of where it really is now |
+| 2026-10-15 | Spot photo captured synchronously at placement | ~30–50 ms, masked by the tag sheet; revisit if non-Pro profiling disagrees |

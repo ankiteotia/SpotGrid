@@ -10,6 +10,7 @@
 
 import ARKit
 import RealityKit
+import SwiftData
 import SwiftUI
 import UIKit
 
@@ -28,6 +29,12 @@ struct LocateView: View {
     @State private var beforePhoto: UIImage?
 
     private var targetName: String { item?.name ?? spot.name }
+
+    /// Guiding an item to a spot it USED to be in (from its history).
+    private var isEarlierSpot: Bool {
+        guard let item else { return false }
+        return item.spot?.id != spot.id
+    }
 
     var body: some View {
         ZStack {
@@ -99,6 +106,11 @@ struct LocateView: View {
                 Text(item == nil ? room.name : spot.locationText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if isEarlierSpot {
+                    Text("Earlier spot from its history")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
                 if let notes = item?.notes, !notes.isEmpty {
                     Text(notes)
                         .font(.caption)
@@ -219,9 +231,14 @@ struct LocateView: View {
 
             if coordinator.state == .guiding {
                 Button {
-                    // Finding it is a confirmation that the app is right.
                     if let item {
-                        Inventory.confirmStillThere(item, in: modelContext)
+                        if isEarlierSpot {
+                            // Found at an older spot — that's where it really is.
+                            Inventory.move(item, to: spot, in: modelContext)
+                        } else {
+                            // Finding it confirms the app is right.
+                            Inventory.confirmStillThere(item, in: modelContext)
+                        }
                     }
                     coordinator.stop()
                     dismiss()
