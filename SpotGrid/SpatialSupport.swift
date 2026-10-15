@@ -1,32 +1,56 @@
 //
 //  SpatialSupport.swift
-//  MicroLocator
+//  SpotGrid
 //
 //  Small shared spatial vocabulary: the anchor-name contract that links
-//  StoredAsset ↔ ARAnchor, hardware capability gates, and user-facing labels
+//  SpotModel ↔ ARAnchor, hardware capability gates, and user-facing labels
 //  for ARKit's world mapping status.
 //
 
 import ARKit
+import Foundation
 import RealityKit
 import RoomPlan
 
 // MARK: - Anchor naming contract
 
-/// The single place that defines how a StoredAsset's identity is embedded into
-/// the ARWorldMap. If this ever drifts between writer (tagging) and reader
+/// The single place that defines how a spot's identity is embedded into the
+/// ARWorldMap. If this ever drifts between writer (tagging) and reader
 /// (locating), relocalized anchors silently stop matching — so it lives here
-/// and nowhere else.
+/// and nowhere else. `SpotModel.anchorName` stores the result.
 enum AnchorNaming {
-    static let prefix = "asset:"
+    /// Current scheme (V1.2+): one anchor per spot.
+    static let spotPrefix = "spot:"
 
-    static func name(for assetID: UUID) -> String {
-        prefix + assetID.uuidString
+    /// Pre-spot scheme: one anchor per item. Maps saved by older builds still
+    /// contain these, and upgraded spots keep pointing at them — readers must
+    /// understand this prefix forever.
+    static let legacyAssetPrefix = "asset:"
+
+    static func spotAnchorName(for spotID: UUID) -> String {
+        spotPrefix + spotID.uuidString
     }
 
-    static func assetID(from anchorName: String?) -> UUID? {
-        guard let anchorName, anchorName.hasPrefix(prefix) else { return nil }
-        return UUID(uuidString: String(anchorName.dropFirst(prefix.count)))
+    static func legacyAssetAnchorName(for assetID: UUID) -> String {
+        legacyAssetPrefix + assetID.uuidString
+    }
+
+    /// True for any anchor this app wrote (spot or legacy item anchor), as
+    /// opposed to ARKit's own plane/mesh anchors.
+    static func isAppAnchor(_ anchorName: String?) -> Bool {
+        guard let anchorName else { return false }
+        return anchorName.hasPrefix(spotPrefix) || anchorName.hasPrefix(legacyAssetPrefix)
+    }
+}
+
+// MARK: - Distance formatting
+
+enum DistanceFormatting {
+    /// "45 cm" under a metre, "2.3 m" from there on.
+    static func text(meters: Float) -> String {
+        meters < 1
+            ? String(format: "%.0f cm", meters * 100)
+            : String(format: "%.1f m", meters)
     }
 }
 

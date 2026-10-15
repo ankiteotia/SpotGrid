@@ -6,13 +6,15 @@
 //
 //  .newRoom — the original flow. One ARSession shared across:
 //      1. RoomPlan scanning (LiDAR) or a manual mapping walk (non-LiDAR)
-//      2. Item tagging (RealityKit ARView on the same session)
+//      2. Spot tagging (RealityKit ARView on the same session) — each spot
+//         gets a `spot:<uuid>` anchor, an automatic photo, and optional items
 //      3. World map capture (getCurrentWorldMap → archive → SwiftData)
 //
-//  .append(room) — add items to an EXISTING room:
+//  .append(room) — add spots to an EXISTING room:
 //      1. Relocalize into the room's saved ARWorldMap (like Locate mode)
-//      2. Restored anchors reappear via didAdd → old items render as markers
-//      3. Tag new items on the relocalized session
+//      2. Restored anchors reappear via didAdd → existing spots render as
+//         markers; anchors of deleted spots are pruned
+//      3. Tag new spots on the relocalized session
 //      4. getCurrentWorldMap AGAIN — the fresh map contains old + new anchors
 //         together — and REPLACE the room's worldMapData with it
 //
@@ -26,7 +28,8 @@
 @preconcurrency import RoomPlan
 
 import Combine
-import CoreImage
+import CoreVideo
+import Foundation
 import RealityKit
 import SwiftData
 import SwiftUI
@@ -60,22 +63,25 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
         case failed(String)
     }
 
-    /// A confirmed item, held in memory until the room is saved as a whole.
-    struct DraftAsset: Identifiable, Equatable {
+    /// A confirmed spot, held in memory until the room is saved as a whole.
+    struct DraftSpot: Identifiable, Equatable {
         let id: UUID
         var name: String
-        var notes: String
+        var itemNames: [String]
         let transform: simd_float4x4
+        let photo: PhotoPair?
 
         var position: SIMD3<Float> {
             SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
         }
     }
 
-    /// A raycast hit awaiting the user's name/notes in the tag sheet.
+    /// A raycast hit awaiting the user's spot name in the tag sheet. The photo
+    /// is taken at placement time, while the camera still points at the spot.
     struct PendingPlacement: Identifiable {
         let id = UUID()
         let transform: simd_float4x4
+        let photo: PhotoPair?
     }
 
     /// Live state of the non-LiDAR crosshair placement system.
@@ -89,7 +95,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
     // MARK: - Published state
 
     @Published private(set) var phase: Phase
-    @Published private(set) var draftAssets: [DraftAsset] = []
+    @Published private(set) var draftSpots: [DraftSpot] = []
     @Published var pendingPlacement: PendingPlacement?
     @Published private(set) var mappingStatus: ARFrame.WorldMappingStatus = .notAvailable
     @Published var transientHint: String?
@@ -116,7 +122,12 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
 
     private var appendSessionStarted = false
     private var referenceSnapshotJPEG: Data?
-    private static let ciContext = CIContext()
+
+    /// App anchors that should render as markers: the room's current spots
+    /// (append mode) plus every spot tagged this session. Restored anchors NOT
+    /// in this set belong to deleted spots and are removed from the session,
+    /// so the next saved map no longer carries them.
+    private var liveAnchorNames: Set<String> = []
 
     // Reticle placement (non-LiDAR): a tracked raycast from screen center that
     // ARKit continuously refines, with a live preview entity. Tap-to-place is
@@ -150,6 +161,9 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
             phase = .relocalizingExisting
         }
         super.init()
+        if case .append(let room) = mode {
+            liveAnchorNames = Set(room.spots.map(\.anchorName))
+        }
     }
 
     // MARK: - Phase 1 (non-LiDAR fallback): manual mapping
@@ -166,7 +180,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
     func startTaggingAfterMapping() {
         guard phase == .mapping, mappingStatus.isSufficientForSaving else { return }
         phase = .tagging
-        transientHint = "Tap a drawer, shelf, or spot to tag an item"
+        transientHint = Self.taggingHint
     }
 
     // MARK: - Phase 1 → 2: finish scanning (LiDAR path)
@@ -200,7 +214,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
             // .removeExistingAnchors — preserving the established world origin.
             arSession.run(persistence.trackingConfiguration(for: .capture))
             if phase == .tagging {
-                transientHint = "Tap a drawer, shelf, or spot to tag an item"
+                transientHint = Self.taggingHint
             }
 
         case .append(let room):
@@ -241,7 +255,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
         // Non-LiDAR: taps commit against an unrefined depth estimate and land
         // centimeters-to-decimeters off — the crosshair flow replaces them.
         if usesReticlePlacement {
-            transientHint = "Use the crosshair — line it up with the exact spot, then tap Place Item"
+            transientHint = "Use the crosshair — line it up with the exact spot, then tap Place Spot"
             return
         }
 
@@ -255,7 +269,10 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
             return
         }
 
-        pendingPlacement = PendingPlacement(transform: result.worldTransform)
+        pendingPlacement = PendingPlacement(
+            transform: result.worldTransform,
+            photo: captureSpotPhoto()
+        )
     }
 
     // MARK: - Reticle placement (non-LiDAR path)
@@ -318,10 +335,10 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
         reticle = distance > maxReticlePlacementDistance ? .tooFar(distance) : .ready(distance)
     }
 
-    /// The non-LiDAR "Place Item" action: commit the latest refined transform.
+    /// The non-LiDAR "Place Spot" action: commit the latest refined transform.
     func placeAtReticle() {
         guard case .ready = reticle, let transform = lastReticleTransform else { return }
-        pendingPlacement = PendingPlacement(transform: transform)
+        pendingPlacement = PendingPlacement(transform: transform, photo: captureSpotPhoto())
     }
 
     private func stopReticle() {
@@ -334,25 +351,33 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
     }
 
     /// User confirmed the tag sheet: mint the named anchor. The name embeds the
-    /// asset UUID, so the anchor inside the world map and the SwiftData row are
-    /// permanently linked — and renaming the item later never touches it.
-    func confirmPendingAsset(name: String, notes: String) {
+    /// spot UUID, so the anchor inside the world map and the SwiftData row are
+    /// permanently linked — and renaming the spot later never touches it.
+    func confirmPendingSpot(name: String, itemNames: [String]) {
         guard let pending = pendingPlacement else { return }
         pendingPlacement = nil
 
-        let assetID = UUID()
-        draftAssets.append(
-            DraftAsset(id: assetID, name: name, notes: notes, transform: pending.transform)
+        let spotID = UUID()
+        draftSpots.append(
+            DraftSpot(
+                id: spotID,
+                name: name,
+                itemNames: itemNames,
+                transform: pending.transform,
+                photo: pending.photo
+            )
         )
 
-        let anchor = ARAnchor(name: AnchorNaming.name(for: assetID), transform: pending.transform)
-        arSession.add(anchor: anchor)
+        let anchorName = AnchorNaming.spotAnchorName(for: spotID)
+        liveAnchorNames.insert(anchorName)
+        arSession.add(anchor: ARAnchor(name: anchorName, transform: pending.transform))
         // → session(_:didAdd:) renders the visual marker.
     }
 
-    func removeDraft(_ draft: DraftAsset) {
-        draftAssets.removeAll { $0.id == draft.id }
-        let name = AnchorNaming.name(for: draft.id)
+    func removeDraft(_ draft: DraftSpot) {
+        draftSpots.removeAll { $0.id == draft.id }
+        let name = AnchorNaming.spotAnchorName(for: draft.id)
+        liveAnchorNames.remove(name)
         if let anchor = arSession.currentFrame?.anchors.first(where: { $0.name == name }) {
             arSession.remove(anchor: anchor)
         }
@@ -375,17 +400,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
                 room.capturedRoomData = try? JSONEncoder().encode(capturedRoom)
             }
             context.insert(room)
-
-            for draft in draftAssets {
-                let asset = StoredAsset(
-                    id: draft.id,               // same UUID the anchor name embeds
-                    name: draft.name,
-                    notes: draft.notes,
-                    position: draft.position
-                )
-                asset.room = room
-                context.insert(asset)
-            }
+            insertDraftSpots(into: room, context: context)
 
             try context.save()
             arSession.pause()
@@ -398,7 +413,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
 
     // MARK: - Save (append to existing room)
 
-    func saveAppendedItems(in context: ModelContext) async {
+    func saveAppendedSpots(in context: ModelContext) async {
         guard case .append(let room) = mode, phase == .tagging else { return }
         stopReticle()
         phase = .saving
@@ -414,17 +429,7 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
             if room.referenceImageData == nil {
                 room.referenceImageData = referenceSnapshotJPEG
             }
-
-            for draft in draftAssets {
-                let asset = StoredAsset(
-                    id: draft.id,
-                    name: draft.name,
-                    notes: draft.notes,
-                    position: draft.position
-                )
-                asset.room = room
-                context.insert(asset)
-            }
+            insertDraftSpots(into: room, context: context)
 
             try context.save()
             arSession.pause()
@@ -432,6 +437,25 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
         } catch {
             saveError = error.localizedDescription
             phase = .tagging
+        }
+    }
+
+    /// Turns this session's drafts into spots (same UUID the anchor name
+    /// embeds) with their items. The caller saves.
+    private func insertDraftSpots(into room: RoomModel, context: ModelContext) {
+        for draft in draftSpots {
+            let spot = SpotModel(
+                id: draft.id,
+                name: draft.name,
+                position: draft.position,
+                photo: draft.photo
+            )
+            context.insert(spot)
+            spot.room = room
+
+            for itemName in draft.itemNames {
+                Inventory.makeItem(named: itemName, in: spot, context: context)
+            }
         }
     }
 
@@ -447,20 +471,36 @@ final class ScanAndTagCoordinator: NSObject, ObservableObject {
         arSession.pause()
     }
 
-    // MARK: - Reference snapshot
+    // MARK: - Photos
+
+    private static let taggingHint = "Tap a drawer, shelf, or box to tag it as a spot"
+
+    private var interfaceOrientation: UIInterfaceOrientation {
+        arView?.window?.windowScene?.interfaceOrientation ?? .portrait
+    }
+
+    /// The spot's "before" photo: the current camera frame at placement time.
+    private func captureSpotPhoto() -> PhotoPair? {
+        guard let pixelBuffer = arSession.currentFrame?.capturedImage,
+              let image = ImageSupport.uprightImage(
+                  from: pixelBuffer,
+                  interfaceOrientation: interfaceOrientation,
+                  scale: 0.5
+              )
+        else { return nil }
+        return ImageSupport.photoPair(from: image, maxDimension: 1280)
+    }
 
     /// Downscaled JPEG of the camera feed, captured once when tracking first
     /// becomes save-worthy during tagging. Shown later as the "point your
     /// camera at this area" relocalization hint.
-    private static func jpegSnapshot(from pixelBuffer: CVPixelBuffer) -> Data? {
-        let scaled = CIImage(cvPixelBuffer: pixelBuffer)
-            .transformed(by: CGAffineTransform(scaleX: 0.3, y: 0.3))
-        guard let cgImage = ciContext.createCGImage(scaled, from: scaled.extent) else {
-            return nil
-        }
-        // Sensor frames are landscape; .right presents them portrait-correct.
-        return UIImage(cgImage: cgImage, scale: 1, orientation: .right)
-            .jpegData(compressionQuality: 0.6)
+    private func referenceSnapshot(from pixelBuffer: CVPixelBuffer) -> Data? {
+        guard let image = ImageSupport.uprightImage(
+            from: pixelBuffer,
+            interfaceOrientation: interfaceOrientation,
+            scale: 0.3
+        ) else { return nil }
+        return ImageSupport.jpegData(from: image, maxDimension: 640, compressionQuality: 0.6)
     }
 }
 
@@ -513,7 +553,7 @@ extension ScanAndTagCoordinator: ARSessionDelegate {
             if referenceSnapshotJPEG == nil,
                phase == .tagging,
                status.isSufficientForSaving {
-                referenceSnapshotJPEG = Self.jpegSnapshot(from: frame.capturedImage)
+                referenceSnapshotJPEG = referenceSnapshot(from: frame.capturedImage)
             }
         }
     }
@@ -523,12 +563,19 @@ extension ScanAndTagCoordinator: ARSessionDelegate {
             guard let arView else { return }
             // Covers BOTH freshly tapped anchors and — in append mode — the
             // room's original anchors restored during relocalization, which is
-            // how existing items show up as markers for free.
-            for anchor in anchors where AnchorNaming.assetID(from: anchor.name) != nil {
+            // how existing spots show up as markers for free.
+            var staleAnchors: [ARAnchor] = []
+            for anchor in anchors where AnchorNaming.isAppAnchor(anchor.name) {
+                guard let name = anchor.name, liveAnchorNames.contains(name) else {
+                    // A spot deleted since the map was saved — prune it.
+                    staleAnchors.append(anchor)
+                    continue
+                }
                 let anchorEntity = AnchorEntity(anchor: anchor)
                 anchorEntity.addChild(EntityFactory.itemMarker())
                 arView.scene.addAnchor(anchorEntity)
             }
+            staleAnchors.forEach { arSession.remove(anchor: $0) }
         }
     }
 
@@ -538,7 +585,7 @@ extension ScanAndTagCoordinator: ARSessionDelegate {
             // Append mode: tagging unlocks the moment relocalization succeeds.
             guard phase == .relocalizingExisting, case .normal = trackingState else { return }
             phase = .tagging
-            transientHint = "Room recognized — existing items are shown in teal. Tap to add new ones"
+            transientHint = "Room recognized — existing spots are shown in teal. Tap to add new ones"
         }
     }
 }

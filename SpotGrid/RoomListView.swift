@@ -2,10 +2,10 @@
 //  RoomListView.swift
 //  MicroLocator
 //
-//  Landing page: all scanned rooms + a global search bar over every tagged
-//  item. Search flips the list into asset results (dynamic @Query with a
-//  #Predicate built at init — the SwiftData-idiomatic way to do live-filtered
-//  queries). Selecting a result jumps straight into Locate mode.
+//  Landing page: all scanned rooms + a global search bar over every item.
+//  Search flips the list into item results showing photo + "Room › Spot" —
+//  the answer is on screen before AR is even needed. AR guidance is one tap
+//  away on the item screen.
 //
 
 import SwiftData
@@ -18,7 +18,6 @@ struct RoomListView: View {
 
     @State private var searchText = ""
     @State private var isPresentingScan = false
-    @State private var assetToLocate: StoredAsset?
 
     var body: some View {
         NavigationStack {
@@ -28,13 +27,11 @@ struct RoomListView: View {
                 } else if searchText.isEmpty {
                     roomsList
                 } else {
-                    AssetSearchResultsView(searchText: searchText) { asset in
-                        assetToLocate = asset
-                    }
+                    ItemSearchResultsView(searchText: searchText)
                 }
             }
-            .navigationTitle("Spatial Organizer")
-            .searchable(text: $searchText, prompt: "Find an item (e.g. Passport)")
+            .navigationTitle("SpotGrid")
+            .searchable(text: $searchText, prompt: "Find an item, spot, or room")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -48,13 +45,6 @@ struct RoomListView: View {
             .fullScreenCover(isPresented: $isPresentingScan) {
                 ScanFlowView()
             }
-            .fullScreenCover(item: $assetToLocate) { asset in
-                // An asset without a room can't be located — the guard lives in
-                // the search view, so force of habit only: fall back gracefully.
-                if let room = asset.room {
-                    LocateView(room: room, asset: asset)
-                }
-            }
         }
     }
 
@@ -66,15 +56,13 @@ struct RoomListView: View {
             ContentUnavailableView(
                 "No Rooms Yet",
                 systemImage: "square.split.bottomrightquarter",
-                description: Text("Scan your first room, then tap drawers and shelves to tag where things live.")
+                description: Text("Scan your first room, then tag drawers, shelves, and boxes as spots.")
             )
         } else {
             List {
                 ForEach(rooms) { room in
                     NavigationLink {
-                        RoomDetailView(room: room) { asset in
-                            assetToLocate = asset
-                        }
+                        RoomDetailView(room: room)
                     } label: {
                         roomRow(room)
                     }
@@ -89,7 +77,8 @@ struct RoomListView: View {
             Text(room.name)
                 .font(.headline)
             HStack(spacing: 12) {
-                Label("\(room.assets.count) items", systemImage: "mappin.and.ellipse")
+                Label("\(room.spots.count) spots", systemImage: "mappin.and.ellipse")
+                Label("\(room.assets.count) items", systemImage: "shippingbox")
                 Label(room.scannedDate.formatted(date: .abbreviated, time: .omitted),
                       systemImage: "calendar")
             }
@@ -119,43 +108,42 @@ struct RoomListView: View {
 
 // MARK: - Room detail
 
+/// A room's spots. Each spot opens to its items; managing items never needs AR.
 struct RoomDetailView: View {
 
     let room: RoomModel
-    let onLocate: (StoredAsset) -> Void
 
-    @State private var isAppendingItems = false
+    @Environment(\.modelContext) private var modelContext
+
+    @State private var isAppendingSpots = false
     @State private var isRenamingRoom = false
     @State private var renameDraft = ""
-    @State private var assetToEdit: StoredAsset?
-
-    private var sortedAssets: [StoredAsset] {
-        room.assets.sorted { $0.dateAdded > $1.dateAdded }
-    }
+    @State private var spotPendingDeletion: SpotModel?
 
     var body: some View {
         List {
             Section {
-                ForEach(sortedAssets) { asset in
-                    Button {
-                        onLocate(asset)
+                ForEach(room.sortedSpots) { spot in
+                    NavigationLink {
+                        SpotDetailView(spot: spot)
                     } label: {
-                        assetRow(asset)
+                        SpotRow(spot: spot)
                     }
-                    .buttonStyle(.plain)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        // Not role: .destructive — that role removes the row
+                        // before the confirmation dialog has been answered.
                         Button {
-                            assetToEdit = asset
+                            spotPendingDeletion = spot
                         } label: {
-                            Label("Edit", systemImage: "pencil")
+                            Label("Delete", systemImage: "trash")
                         }
-                        .tint(.blue)
+                        .tint(.red)
                     }
                 }
             } header: {
-                Text("Tagged Items")
+                Text("Spots")
             } footer: {
-                Text("Tap an item to be guided to it in AR. Swipe to edit its name or notes.")
+                Text("A spot is a place tagged in AR — a drawer, shelf, or box. Open one to add, move, or remove items without AR.")
             }
         }
         // room is a @Model (Observable) — the title updates live on rename.
@@ -163,9 +151,9 @@ struct RoomDetailView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
-                    isAppendingItems = true
+                    isAppendingSpots = true
                 } label: {
-                    Label("Add Items", systemImage: "plus.viewfinder")
+                    Label("Add Spots", systemImage: "plus.viewfinder")
                 }
 
                 Menu {
@@ -188,70 +176,32 @@ struct RoomDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .fullScreenCover(isPresented: $isAppendingItems) {
-            // Relocalize into this room's saved map, tag new items, re-save.
+        .confirmationDialog(
+            "Delete this spot?",
+            isPresented: Binding(
+                get: { spotPendingDeletion != nil },
+                set: { if !$0 { spotPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: spotPendingDeletion
+        ) { spot in
+            Button(SpotDeletion.buttonTitle(for: spot), role: .destructive) {
+                Inventory.delete(spot, in: modelContext)
+            }
+        } message: { _ in
+            Text(SpotDeletion.message)
+        }
+        .fullScreenCover(isPresented: $isAppendingSpots) {
+            // Relocalize into this room's saved map, tag new spots, re-save.
             ScanFlowView(mode: .append(room))
         }
-        .sheet(item: $assetToEdit) { asset in
-            EditAssetSheet(asset: asset)
-                .presentationDetents([.height(320)])
-        }
         .overlay {
-            if room.assets.isEmpty {
+            if room.spots.isEmpty {
                 ContentUnavailableView(
-                    "Nothing Tagged",
+                    "No Spots Yet",
                     systemImage: "mappin.slash",
-                    description: Text("This room was saved without any tagged items. Use Add Items to tag some.")
+                    description: Text("Use Add Spots to tag drawers, shelves, and boxes in this room.")
                 )
-            }
-        }
-    }
-
-    private func assetRow(_ asset: StoredAsset) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(asset.name)
-                    .font(.body.weight(.medium))
-                if !asset.notes.isEmpty {
-                    Text(asset.notes)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer()
-            Image(systemName: "location.viewfinder")
-                .foregroundStyle(.tint)
-        }
-        .contentShape(Rectangle())
-    }
-}
-
-// MARK: - Edit asset sheet
-
-/// Direct @Bindable editing of the SwiftData model — changes autosave live.
-/// Safe by design: the AR anchor is keyed by the asset's UUID
-/// ("asset:<uuid>"), never by its display name, so renaming an item can never
-/// disturb its saved spatial location.
-struct EditAssetSheet: View {
-
-    @Bindable var asset: StoredAsset
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                TextField("Item name", text: $asset.name)
-                TextField("Notes", text: $asset.notes, axis: .vertical)
-                    .lineLimit(2...4)
-            }
-            .navigationTitle("Edit Item")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .disabled(asset.name.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
             }
         }
     }
@@ -259,48 +209,32 @@ struct EditAssetSheet: View {
 
 // MARK: - Global search results
 
-/// Dynamic @Query pattern: the predicate is built in init from the live search
-/// text, so SwiftData does the filtering (localizedStandardContains is
-/// diacritic/case-insensitive — the right behavior for "where's my passport").
-struct AssetSearchResultsView: View {
+/// Matches item name, notes, spot name, and room name. Filtering happens in
+/// memory: the relationship-spanning predicate this needs is fragile in
+/// SwiftData, and a household inventory is small.
+struct ItemSearchResultsView: View {
 
-    @Query private var results: [StoredAsset]
-    private let onLocate: (StoredAsset) -> Void
+    let searchText: String
 
-    init(searchText: String, onLocate: @escaping (StoredAsset) -> Void) {
-        self.onLocate = onLocate
-        let predicate = #Predicate<StoredAsset> {
-            $0.name.localizedStandardContains(searchText)
-            || $0.notes.localizedStandardContains(searchText)
-        }
-        _results = Query(filter: predicate, sort: \StoredAsset.dateAdded, order: .reverse)
+    @Query(sort: \StoredAsset.name) private var allItems: [StoredAsset]
+
+    private var results: [StoredAsset] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        return allItems.filter { $0.matches(query) }
     }
 
     var body: some View {
-        List(results) { asset in
-            Button {
-                guard asset.room != nil else { return }
-                onLocate(asset)
+        List(results) { item in
+            NavigationLink {
+                ItemDetailView(item: item)
             } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(asset.name)
-                            .font(.body.weight(.medium))
-                        Text(asset.room?.name ?? "Unknown room")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "arrow.turn.up.right")
-                        .foregroundStyle(.tint)
-                }
-                .contentShape(Rectangle())
+                ItemRow(item: item, showsLocation: true)
             }
-            .buttonStyle(.plain)
         }
         .overlay {
             if results.isEmpty {
-                ContentUnavailableView.search
+                ContentUnavailableView.search(text: searchText)
             }
         }
     }

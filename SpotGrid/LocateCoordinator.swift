@@ -10,10 +10,13 @@
 //    searching    → waiting for the restored named anchor via didAdd
 //    guiding      → arrow mounted; per-frame distance + on/off-screen guidance
 //
+//  The target is always a spot's anchor (`SpotModel.anchorName`): `spot:<uuid>`,
+//  or `asset:<uuid>` for spots upgraded from the pre-spot data model.
+//
 //  Fallback: if the named anchor doesn't resurface within a few seconds of
-//  relocalization (e.g. map saved by an older build), the arrow is placed at
-//  the SwiftData-mirrored x/y/z — valid because relocalization has already
-//  re-established the original world origin.
+//  relocalization, the arrow is placed at the spot's SwiftData-mirrored x/y/z —
+//  valid because relocalization has already re-established the original world
+//  origin.
 //
 
 // ARWorldMap / ARFrame are not Sendable; each crossing is a one-shot hand-off.
@@ -67,10 +70,10 @@ final class LocateCoordinator: NSObject, ObservableObject {
 
     // MARK: - Lifecycle
 
-    func configure(arView: ARView, room: RoomModel, asset: StoredAsset) {
+    func configure(arView: ARView, room: RoomModel, spot: SpotModel) {
         self.arView = arView
-        targetAnchorName = asset.anchorName
-        storedFallbackPosition = asset.worldPosition
+        targetAnchorName = spot.anchorName
+        storedFallbackPosition = spot.worldPosition
 
         arView.automaticallyConfigureSession = false
         arView.session = arSession
@@ -165,9 +168,7 @@ final class LocateCoordinator: NSObject, ObservableObject {
 
         // Distance readout.
         let distance = simd_distance(cameraTransform.translation, target)
-        distanceText = distance < 1
-            ? String(format: "%.0f cm", distance * 100)
-            : String(format: "%.1f m", distance)
+        distanceText = DistanceFormatting.text(meters: distance)
 
         // Geiger-counter haptics: cadence tightens as the user closes in.
         haptics.update(distance: distance, deltaTime: deltaTime)

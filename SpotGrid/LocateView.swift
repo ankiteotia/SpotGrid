@@ -16,14 +16,22 @@ import UIKit
 struct LocateView: View {
 
     let room: RoomModel
-    let asset: StoredAsset
+    let spot: SpotModel
+    /// The item being looked for; nil when guiding to the spot itself.
+    let item: StoredAsset?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @StateObject private var coordinator = LocateCoordinator()
+
+    /// Decoded once — the guiding HUD re-renders every frame.
+    @State private var beforePhoto: UIImage?
+
+    private var targetName: String { item?.name ?? spot.name }
 
     var body: some View {
         ZStack {
-            LocateARContainer(coordinator: coordinator, room: room, asset: asset)
+            LocateARContainer(coordinator: coordinator, room: room, spot: spot)
                 .ignoresSafeArea()
 
             stateOverlay
@@ -36,6 +44,7 @@ struct LocateView: View {
             chrome
         }
         .statusBarHidden()
+        .task { beforePhoto = spot.photoData.flatMap(UIImage.init(data:)) }
         .onDisappear { coordinator.stop() }
     }
 
@@ -65,7 +74,7 @@ struct LocateView: View {
             instructionCard(
                 icon: "dot.radiowaves.left.and.right",
                 title: "Room recognized",
-                message: "Pinpointing \(asset.name)…"
+                message: "Pinpointing \(targetName)…"
             )
 
         case .guiding:
@@ -85,10 +94,13 @@ struct LocateView: View {
         VStack {
             Spacer()
             VStack(spacing: 6) {
-                Text(asset.name)
+                Text(targetName)
                     .font(.headline)
-                if !asset.notes.isEmpty {
-                    Text(asset.notes)
+                Text(item == nil ? room.name : spot.locationText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let notes = item?.notes, !notes.isEmpty {
+                    Text(notes)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -97,6 +109,17 @@ struct LocateView: View {
                     Label("You're here — check this exact spot", systemImage: "checkmark.seal.fill")
                         .font(.headline)
                         .foregroundStyle(.green)
+                    if let beforePhoto {
+                        // The "before" photo: compare it with what you see now.
+                        Image(uiImage: beforePhoto)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 220, height: 140)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                        Text("How this spot looked when tagged")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 } else if let distance = coordinator.distanceText {
                     Label(distance, systemImage: "location.north.line.fill")
                         .font(.title3.weight(.semibold).monospacedDigit())
@@ -196,6 +219,10 @@ struct LocateView: View {
 
             if coordinator.state == .guiding {
                 Button {
+                    // Finding it is a confirmation that the app is right.
+                    if let item {
+                        Inventory.confirmStillThere(item, in: modelContext)
+                    }
                     coordinator.stop()
                     dismiss()
                 } label: {
@@ -204,7 +231,7 @@ struct LocateView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.green)
-                .padding(.bottom, 130)
+                .padding(.bottom, coordinator.isArrived && beforePhoto != nil ? 300 : 130)
             }
         }
     }
@@ -216,14 +243,14 @@ private struct LocateARContainer: UIViewRepresentable {
 
     @ObservedObject var coordinator: LocateCoordinator
     let room: RoomModel
-    let asset: StoredAsset
+    let spot: SpotModel
 
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
         arView.applyGuidanceRenderTuning()
         // The coordinator takes over from here: session adoption,
         // automaticallyConfigureSession = false, map load, delegate wiring.
-        coordinator.configure(arView: arView, room: room, asset: asset)
+        coordinator.configure(arView: arView, room: room, spot: spot)
         return arView
     }
 
