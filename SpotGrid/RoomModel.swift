@@ -38,6 +38,14 @@ final class RoomModel {
     @Relationship(deleteRule: .cascade, inverse: \StoredAsset.room)
     var assets: [StoredAsset] = []
 
+    /// The places tagged in this room. Each spot's anchor lives in `worldMapData`.
+    @Relationship(deleteRule: .cascade, inverse: \SpotModel.room)
+    var spots: [SpotModel] = []
+
+    var sortedSpots: [SpotModel] {
+        spots.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
     init(id: UUID = UUID(), name: String, scannedDate: Date = .now) {
         self.id = id
         self.name = name

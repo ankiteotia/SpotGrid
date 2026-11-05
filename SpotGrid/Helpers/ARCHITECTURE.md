@@ -140,7 +140,7 @@ MicroLocator/
 │   │   ├── RoomCaptureViewRepresentable.swift   RoomCaptureView(frame:arSession:)
 │   │   ├── PlacementARViewContainer.swift       ARView on shared session + tap gesture
 │   │   └── ScanFlowView.swift           scanning → processing → tagging → saving UI,
-│   │                                    TagItemSheet, SaveRoomSheet
+│   │                                    TagSpotSheet, SaveRoomSheet
 │   └── Locate/
 │       ├── LocateCoordinator.swift      map load, relocalization tracking, anchor match,
 │       │                                fallback placement, per-frame guidance math
@@ -164,7 +164,7 @@ RoomListView (+)
        [Finish Scan]        captureSession.stop(pauseARSession: false)
        phase .processing    RoomBuilder.capturedRoom(from:) (async)
        phase .tagging       PlacementARViewContainer (same session, no reset)
-                            tap → raycast(.estimatedPlane, .any) → TagItemSheet
+                            tap → raycast(.estimatedPlane, .any) → TagSpotSheet
                             confirm → ARAnchor(name: "asset:<uuid>") → session.add
                             didAdd → AnchorEntity(anchor:) + itemMarker()
        [Save Room]          gate: worldMappingStatus ∈ {mapped, extending}
@@ -179,7 +179,7 @@ RoomListView (+)
 Search bar → StoredAsset → LocateView(room:asset:) (fullScreenCover)
   loadingMap → relocalizing → (tracking .normal) → searchingAnchor
     → didAdd matches "asset:<uuid>" → guiding
-    → else 4 s timeout → fallback AnchorEntity(world: stored x/y/z) → guiding
+    → else 10 s timeout → fallback AnchorEntity(world: stored x/y/z) → guiding
   per frame: arrow bob/spin, distance pill, off-screen chevron
 ```
 
@@ -328,3 +328,62 @@ and commits with Place Item — gated to ≤ 2.5 m where non-LiDAR depth error i
 acceptable. Screen taps for placement are reserved for LiDAR devices, where the
 scene mesh makes single taps precise. This supersedes the earlier tap-with-
 fallback-chain approach for the fallback path.
+
+**Placement model (current, July 2026 accuracy fix).** The crosshair turned out
+hard to aim at a specific object, so placement is tap-to-place on **every**
+device again:
+
+- `handleTap` raycasts `.estimatedPlane` from the exact tap point. On LiDAR it
+  hits the mesh; on non-LiDAR the lateral position is right and depth may be a
+  few cm off.
+- If the tap hits no surface (non-LiDAR), it falls back to the latest result of
+  the silent screen-center `ARTrackedRaycast`, which keeps refining in the
+  background.
+- No preview ring, no 2.5 m gate. The crosshair views and `placeAtReticle()`
+  are still in the code but nothing calls them.
+
+**Locate accuracy (same fix).** Locate runs with no plane detection (it can snap
+restored anchors to planes and shift them), smooths the target position (8 %
+per frame) before computing distance and screen guidance, waits 10 s before
+the stored-position fallback, and freezes the readout when the user taps
+*Found It*.
+
+---
+
+## 11. V1.2: Spots, photos, and location history
+
+Product plan: see [`ROADMAP.md`](../../ROADMAP.md) (Phase 1).
+
+**Data model.** `Room ──< Spot ──< Item ──< LocationEvent`
+
+| Model | Owns | Notes |
+|---|---|---|
+| `SpotModel` | The AR anchor (`anchorName`), x/y/z mirror, automatic photo + thumbnail | Tagged once in AR. `anchorName` is stored, not derived, so upgraded spots can keep legacy `asset:<uuid>` anchors |
+| `StoredAsset` (item) | Name, notes, own photo + thumbnail, `lastConfirmedDate` | Belongs to a spot. `room` and x/y/z are kept in sync with the spot by `Inventory` |
+| `LocationEvent` | Kind (placed/moved), date, snapshot of room/spot names, `spotID` | `spotID` is a plain UUID, not a relationship, so history survives spot deletion |
+
+**Why spots.** AR is needed only to *place a place*. Everything that changes
+day to day — adding, moving, removing items — happens in plain SwiftUI screens,
+and every move appends a `LocationEvent`. "Where was this originally?" is the
+first event, and Locate can guide to that old spot if it still exists.
+
+**Anchor naming.** New anchors are `spot:<uuid>` (`AnchorNaming`). Readers
+accept both prefixes forever. In append mode, restored app anchors that no
+longer belong to a spot (deleted spots) are removed from the session, so the
+next saved map no longer carries them.
+
+**Upgrade path.** `LegacyDataUpgrader` runs at launch: each pre-spot item with
+no spot becomes the only item of a new spot pointing at the item's original
+`asset:<uuid>` anchor, plus a `placed` history event. Schema changes are
+additive (new models, optional attributes, relationships), so SwiftData's
+lightweight migration handles the store.
+
+**Photos.** The spot photo is the camera frame at placement time
+(`ImageSupport.uprightImage`, orientation-aware for iPad landscape). Item
+photos come from the camera or photo library *outside* AR — opening the camera
+would interrupt the shared `ARSession`. Every photo is stored as a capped JPEG
+(external storage) plus a ~240 px thumbnail used by list rows.
+
+**Search.** Matches item name, notes, spot name, and room name, filtered in
+memory (a relationship-spanning `#Predicate` is fragile). Results open the item
+screen — photo and "Room › Spot" first; AR guidance is one tap away.

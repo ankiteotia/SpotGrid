@@ -3,8 +3,8 @@
 //  MicroLocator
 //
 //  Full-screen capture flow for BOTH modes:
-//    .newRoom  — scan/map → tag → name the room → save
-//    .append   — relocalize into an existing room → tag new items → save
+//    .newRoom  — scan/map → tag spots → name the room → save
+//    .append   — relocalize into an existing room → tag new spots → save
 //
 //  One structural rule matters here: in append mode, the relocalization and
 //  tagging phases MUST share the same PlacementARViewContainer instance. The
@@ -17,7 +17,6 @@ import ARKit
 import SwiftData
 import SwiftUI
 import UIKit
-import PhotosUI
 
 struct ScanFlowView: View {
 
@@ -52,9 +51,10 @@ struct ScanFlowView: View {
         .statusBarHidden()
         .interactiveDismissDisabled()
         .sheet(item: $coordinator.pendingPlacement) { placement in
-            TagItemSheet(
-                onConfirm: { name, notes, iconName, photoData in
-                    coordinator.confirmPendingAsset(name: name, notes: notes, iconName: iconName, photoData: photoData)
+            TagSpotSheet(
+                photo: placement.photo,
+                onConfirm: { spotName, iconName, itemNames in
+                    coordinator.confirmPendingSpot(name: spotName, iconName: iconName, itemNames: itemNames)
                 },
                 onCancel: { coordinator.pendingPlacement = nil }
             )
@@ -201,7 +201,7 @@ struct ScanFlowView: View {
 
             if coordinator.phase == .saving {
                 Color.black.opacity(0.55).ignoresSafeArea()
-                ProgressView(coordinator.isAppending ? "Saving items & updated map…" : "Saving room & world map…")
+                ProgressView(coordinator.isAppending ? "Saving spots & updated map…" : "Saving room & world map…")
                     .tint(.white)
                     .foregroundStyle(.white)
             }
@@ -255,7 +255,7 @@ struct ScanFlowView: View {
             Button {
                 coordinator.placeAtReticle()
             } label: {
-                Label("Place Item Here", systemImage: "mappin.and.ellipse")
+                Label("Place Spot Here", systemImage: "mappin.and.ellipse")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
@@ -320,8 +320,7 @@ struct ScanFlowView: View {
 
     private var bottomBar: some View {
         HStack(spacing: 12) {
-            Label("\(coordinator.draftAssets.count) \(coordinator.isAppending ? "new" : "tagged")",
-                  systemImage: "mappin.and.ellipse")
+            Label(spotCountText, systemImage: "mappin.and.ellipse")
                 .font(.subheadline.weight(.medium))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
@@ -331,17 +330,23 @@ struct ScanFlowView: View {
 
             Button {
                 if coordinator.isAppending {
-                    Task { await coordinator.saveAppendedItems(in: modelContext) }
+                    Task { await coordinator.saveAppendedSpots(in: modelContext) }
                 } else {
                     isPresentingSaveSheet = true
                 }
             } label: {
-                Text(coordinator.isAppending ? "Save Items" : "Save Room")
+                Text(coordinator.isAppending ? "Save Spots" : "Save Room")
                     .font(.headline)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!coordinator.mappingStatus.isSufficientForSaving || coordinator.draftAssets.isEmpty)
+            .disabled(!coordinator.mappingStatus.isSufficientForSaving || coordinator.draftSpots.isEmpty)
         }
+    }
+
+    private var spotCountText: String {
+        let count = coordinator.draftSpots.count
+        let noun = count == 1 ? "spot" : "spots"
+        return coordinator.isAppending ? "\(count) new \(noun)" : "\(count) \(noun)"
     }
 
     // MARK: - Failure / chrome
@@ -384,78 +389,97 @@ struct ScanFlowView: View {
     }
 }
 
-// MARK: - Tag item sheet
+// MARK: - Tag spot sheet
 
-struct TagItemSheet: View {
-    let onConfirm: (_ name: String, _ notes: String, _ iconName: String, _ photoData: Data?) -> Void
+/// Names the spot just placed, picks its marker icon and, optionally, lists
+/// what's in it. Items can be added, moved, or removed later without AR, so
+/// this stays quick.
+struct TagSpotSheet: View {
+    let photo: PhotoPair?
+    let onConfirm: (_ spotName: String, _ iconName: String, _ itemNames: [String]) -> Void
     let onCancel: () -> Void
 
-    @State private var name = ""
-    @State private var notes = ""
-    @State private var iconName = "mappin.and.ellipse"
-    @State private var photoItem: PhotosPickerItem?
-    @State private var photoData: Data?
-    
-    @FocusState private var nameFocused: Bool
+    @State private var spotName = ""
+    @State private var iconName = SpotIcons.defaultIcon
+    @State private var itemNames: [String] = [""]
+    @FocusState private var focusedField: Field?
 
-    let iconChoices = ["mappin.and.ellipse", "key.fill", "doc.text.fill", "lanyardcard.fill", "laptopcomputer", "tshirt.fill", "glasses", "pills.fill", "bag.fill", "creditcard.fill"]
+    private enum Field: Hashable {
+        case spot
+        case item(Int)
+    }
+
+    private var trimmedSpotName: String {
+        spotName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    TextField("Item name (e.g. Passport)", text: $name)
-                        .focused($nameFocused)
-                    TextField("Notes (e.g. in Drawer 3, under the files)", text: $notes, axis: .vertical)
-                        .lineLimit(2...4)
+                if let data = photo?.photo, let image = UIImage(data: data) {
+                    Section {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(height: 150)
+                            .frame(maxWidth: .infinity)
+                            .clipped()
+                            .listRowInsets(EdgeInsets())
+                    } footer: {
+                        Text("This photo is saved with the spot.")
+                    }
                 }
-                
-                Section("Icon") {
+
+                Section {
+                    TextField("Spot name (e.g. Almirah drawer 2)", text: $spotName)
+                        .focused($focusedField, equals: .spot)
+                        .submitLabel(.next)
+                        .onSubmit { focusedField = .item(0) }
+                } header: {
+                    Text("Spot")
+                } footer: {
+                    Text("A place you keep things — a drawer, shelf, box, or cupboard.")
+                }
+
+                Section("Marker Icon") {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 16) {
-                            ForEach(iconChoices, id: \.self) { icon in
-                                Image(systemName: icon)
-                                    .font(.title2)
-                                    .foregroundStyle(iconName == icon ? .white : .primary)
-                                    .frame(width: 44, height: 44)
-                                    .background(iconName == icon ? Color.accentColor : Color(uiColor: .systemFill))
-                                    .clipShape(Circle())
-                                    .onTapGesture {
-                                        iconName = icon
-                                    }
+                            ForEach(SpotIcons.choices, id: \.self) { icon in
+                                Button {
+                                    iconName = icon
+                                } label: {
+                                    Image(systemName: icon)
+                                        .font(.title2)
+                                        .foregroundStyle(iconName == icon ? .white : .primary)
+                                        .frame(width: 44, height: 44)
+                                        .background(iconName == icon ? Color.accentColor : Color(uiColor: .systemFill))
+                                        .clipShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(iconName == icon ? .isSelected : [])
                             }
                         }
                         .padding(.vertical, 4)
                         .padding(.horizontal, 4)
                     }
                 }
-                
-                Section("Photo (Optional)") {
-                    PhotosPicker(selection: $photoItem, matching: .images, photoLibrary: .shared()) {
-                        if let photoData, let uiImage = UIImage(data: photoData) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(height: 120)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        } else {
-                            Label("Add a Photo", systemImage: "camera.viewfinder")
-                        }
+
+                Section {
+                    ForEach(itemNames.indices, id: \.self) { index in
+                        TextField("Item (e.g. Passport)", text: $itemNames[index])
+                            .focused($focusedField, equals: .item(index))
+                            .submitLabel(.next)
+                            .onSubmit { advance(from: index) }
                     }
-                    .onChange(of: photoItem) { _, newItem in
-                        Task {
-                            guard let data = try? await newItem?.loadTransferable(type: Data.self),
-                                  let uiImage = UIImage(data: data) else { return }
-                            let thumbnail = uiImage.preparingThumbnail(of: CGSize(width: 800, height: 800))
-                            photoData = (thumbnail ?? uiImage).jpegData(compressionQuality: 0.7)
-                        }
+                    Button {
+                        addItemField()
+                    } label: {
+                        Label("Add Another Item", systemImage: "plus.circle")
                     }
-                    if photoData != nil {
-                        Button("Remove Photo", role: .destructive) {
-                            photoItem = nil
-                            photoData = nil
-                        }
-                    }
+                } header: {
+                    Text("Items Here (Optional)")
+                } footer: {
+                    Text("You can add, move, or remove items later without AR.")
                 }
             }
             .navigationTitle("Tag This Spot")
@@ -465,14 +489,32 @@ struct TagItemSheet: View {
                     Button("Cancel", action: onCancel)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Place Tag") {
-                        onConfirm(name.trimmingCharacters(in: .whitespaces), notes, iconName, photoData)
+                    Button("Place Spot") {
+                        let items = itemNames
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                        onConfirm(trimmedSpotName, iconName, items)
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(trimmedSpotName.isEmpty)
                 }
             }
-            .onAppear { nameFocused = true }
+            .onAppear { focusedField = .spot }
         }
+    }
+
+    private func advance(from index: Int) {
+        let isLast = index == itemNames.count - 1
+        let isEmpty = itemNames[index].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if isLast {
+            if !isEmpty { addItemField() }
+        } else {
+            focusedField = .item(index + 1)
+        }
+    }
+
+    private func addItemField() {
+        itemNames.append("")
+        focusedField = .item(itemNames.count - 1)
     }
 }
 

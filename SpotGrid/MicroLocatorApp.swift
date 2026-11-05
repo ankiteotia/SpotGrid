@@ -18,7 +18,9 @@ struct MicroLocatorApp: App {
     /// Explicit container so schema failures crash loudly at launch (during
     /// development) instead of surfacing as mysterious @Query emptiness later.
     private let container: ModelContainer = {
-        let schema = Schema([RoomModel.self, StoredAsset.self])
+        // SpotModel and LocationEvent arrived in V1.2. Both are additive, so
+        // SwiftData migrates existing stores automatically (lightweight).
+        let schema = Schema([RoomModel.self, SpotModel.self, StoredAsset.self, LocationEvent.self])
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false
@@ -30,6 +32,11 @@ struct MicroLocatorApp: App {
             fatalError("Failed to create ModelContainer: \(error)")
         }
     }()
+
+    init() {
+        // Turn pre-spot items into spots before any view queries the store.
+        LegacyDataUpgrader.upgradeIfNeeded(in: container.mainContext)
+    }
 
     var body: some Scene {
         WindowGroup {

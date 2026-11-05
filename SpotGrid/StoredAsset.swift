@@ -2,16 +2,14 @@
 //  StoredAsset.swift
 //  MicroLocator
 //
-//  A physically tagged item ("Passport in Drawer 3"). The x/y/z here is a
-//  *mirror* of the named ARAnchor that lives inside the room's ARWorldMap:
+//  A physical item ("Passport") that lives in a spot ("Almirah drawer 2").
+//  Since V1.2 the AR anchor belongs to the spot, not the item — so items can be
+//  added, moved, and deleted without AR, and every move is recorded in
+//  `history`.
 //
-//    - The anchor inside the map is the spatial source of truth (ARKit refines
-//      anchor transforms during relocalization; raw floats can't).
-//    - These columns exist so the item is searchable/queryable via SwiftData,
-//      and as a fallback placement if the anchor fails to resurface.
-//
-//  The bridge between the two worlds is `AnchorNaming`:
-//  ARAnchor.name == "asset:" + id.uuidString
+//  The x/y/z columns mirror the current spot's position. They predate spots:
+//  older builds anchored each item directly (`asset:<uuid>`), and
+//  `LegacyDataUpgrader` uses these columns to turn such items into spots.
 //
 
 import Foundation
@@ -26,7 +24,9 @@ final class StoredAsset {
     var notes: String
     var dateAdded: Date
 
-    @Attribute(.externalStorage) var photoData: Data?
+    /// Marker icon picked when items were tagged one by one (before spots).
+    /// Icons now live on `SpotModel`; this column is kept so
+    /// `LegacyDataUpgrader` can carry an old item's icon over to its new spot.
     var iconName: String = "mappin.and.ellipse"
 
     // SwiftData can't persist SIMD types directly — store scalar columns.
@@ -34,22 +34,35 @@ final class StoredAsset {
     var yCoordinate: Float
     var zCoordinate: Float
 
+    /// Kept in sync with `spot?.room` (see `Inventory`). Also the link legacy
+    /// items had before spots existed.
     var room: RoomModel?
+
+    /// Where the item is now. Nil only for legacy rows not yet upgraded.
+    var spot: SpotModel?
+
+    /// The user's own photo of the item (camera or library).
+    @Attribute(.externalStorage) var photoData: Data?
+
+    /// Small JPEG for list rows.
+    var thumbnailData: Data?
+
+    /// Last time the user confirmed the item is really where the app says.
+    var lastConfirmedDate: Date?
+
+    @Relationship(deleteRule: .cascade, inverse: \LocationEvent.item)
+    var history: [LocationEvent] = []
 
     init(
         id: UUID = UUID(),
         name: String,
         notes: String = "",
-        iconName: String = "mappin.and.ellipse",
-        photoData: Data? = nil,
         dateAdded: Date = .now,
         position: SIMD3<Float>
     ) {
         self.id = id
         self.name = name
         self.notes = notes
-        self.iconName = iconName
-        self.photoData = photoData
         self.dateAdded = dateAdded
         self.xCoordinate = position.x
         self.yCoordinate = position.y
@@ -66,6 +79,29 @@ final class StoredAsset {
         }
     }
 
-    /// The name of the ARAnchor that represents this asset inside the world map.
-    var anchorName: String { AnchorNaming.name(for: id) }
+    /// Oldest first. The first entry is the item's original location.
+    var sortedHistory: [LocationEvent] {
+        history.sorted { $0.date < $1.date }
+    }
+
+    var originalEvent: LocationEvent? { sortedHistory.first }
+
+    var hasMoved: Bool { history.count > 1 }
+
+    /// "Bedroom › Almirah drawer 2"
+    var locationText: String {
+        spot?.locationText ?? room?.name ?? "No location"
+    }
+
+    /// Row thumbnail: the item's own photo, else the photo of its spot.
+    var displayThumbnail: Data? {
+        thumbnailData ?? spot?.thumbnailData
+    }
+
+    /// Search across everything a person might remember: the item, its notes,
+    /// the spot, or the room.
+    func matches(_ query: String) -> Bool {
+        let fields = [name, notes, spot?.name ?? "", spot?.room?.name ?? room?.name ?? ""]
+        return fields.contains { $0.localizedStandardContains(query) }
+    }
 }
